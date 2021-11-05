@@ -1,0 +1,25 @@
+{
+  "name": "service-repo-patient-zero",
+  "version": "1.0.0",
+  "description": "",
+  "main": "",
+  "scripts": {
+    "unit-test": "jest --coverage --silent",
+    "build": "./node_modules/typescript/bin/tsc",
+    "postbuild": "npm prune --production",
+    "eslint": "./node_modules/eslint/bin/eslint.js .",
+    "prettier": "prettier --check '**/**/*.ts'"
+  },
+  "author": "Slyp",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {},
+  "devDependencies": {
+    "@tsconfig/node14": "^1.0.0",
+    "@typescript-eslint/eslint-plugin": "^4.23.0",
+    "@typescript-eslint/parser": "^4.23.0",
+    "eslint": "^7.26.0",
+    "prettier": "^2.1.2",
+    "typescript": "^4.3.5"
+  }
+}

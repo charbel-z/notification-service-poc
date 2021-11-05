@@ -1,0 +1,100 @@
+# Contains networking resources such as the ALB
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: <ServiceName> Ingester
+
+Parameters:
+  VPCId:
+    Type: String
+    Description: The ID of the VPC where the Load Balancer is located
+  SubnetOneId:
+    Type: String
+    Description: The ID of the first subnet the load balancer is located in
+  SubnetTwoId:
+    Type: String
+    Description: The ID of the second subnet the load balancer is located in
+  IngesterFunctionArn:
+    Type: String
+
+Resources:
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn:
+      - LoadBalancerSecurityGroup
+    Properties:
+      Scheme: internet-facing
+      Name: update-this-name---making-it-long-so-you-cant-accidentally-deploy-it-without-changing
+      Subnets:
+        - !Ref SubnetOne
+        - !Ref SubnetTwo
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      # LoadBalancerAttributes:
+      #   - Key: access_logs.s3.enabled
+      #     Value: 'true' # if required
+      #   - Key: access_logs.s3.bucket
+      #     Value: # bucket name
+      #   - Key: access_logs.s3.prefix
+      #     Value: # storage prefix in bucket
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions: # Fallback to this if no listener rules match.
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: "400"
+            MessageBody: "Route not supported"
+            ContentType: "text/plain"
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # Allows a ListenerRule to be linked to a lambda
+  PostTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: PostFunctionInvokePermission
+    Properties:
+      TargetType: lambda
+      Targets:
+        - Id: !GetAtt PostFunction.Arn
+
+  # Defines the path/httpMethod/etc matching rules to enable routing to specific lambdas/containers
+  PostListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 1
+      Conditions:
+        - Field: http-request-method
+          HttpRequestMethodConfig:
+            Values:
+              - POST
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref PostTargetGroup
+
+  # Allows external connections to the ALB
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host (not safe for production)
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # The ALB needs permission to invoke the target resource
+  PostFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt PostFunction.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: elasticloadbalancing.amazonaws.com
+
+Outputs:
+  LoadBalancerDNSNAme:
+    Value: !GetAtt ALB.DNSName

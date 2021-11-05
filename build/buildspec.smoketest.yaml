@@ -1,0 +1,31 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 14
+    commands:
+      - cd build/smoketest
+      - npm ci
+  build:
+    commands:
+      # Grab creds for the platform account
+      - ASSUME_ROLE_ARN="arn:aws:iam::$PLATFORM_ACCOUNT_ID:role/account-deployer"
+      - PLATFORM_TEMP_ROLE=$(aws sts assume-role --role-arn $ASSUME_ROLE_ARN --role-session-name platform-account)
+      - echo $PLATFORM_TEMP_ROLE
+      - export PLATFORM_TEMP_ROLE
+      - export PLATFORM_AWS_ACCESS_KEY_ID=$(echo "${PLATFORM_TEMP_ROLE}" | jq -r '.Credentials.AccessKeyId')
+      - export PLATFORM_AWS_SECRET_ACCESS_KEY=$(echo "${PLATFORM_TEMP_ROLE}" | jq -r '.Credentials.SecretAccessKey')
+      - export PLATFORM_AWS_SESSION_TOKEN=$(echo "${PLATFORM_TEMP_ROLE}" | jq -r '.Credentials.SessionToken')
+      # Grab creds for the data account
+      - ASSUME_ROLE_ARN="arn:aws:iam::$DATA_ACCOUNT_ID:role/account-deployer"
+      - DATA_TEMP_ROLE=$(aws sts assume-role --role-arn $ASSUME_ROLE_ARN --role-session-name data-account)
+      - echo $DATA_TEMP_ROLE
+      - export DATA_TEMP_ROLE
+      - export DATA_AWS_ACCESS_KEY_ID=$(echo "${DATA_TEMP_ROLE}" | jq -r '.Credentials.AccessKeyId')
+      - export DATA_AWS_SECRET_ACCESS_KEY=$(echo "${DATA_TEMP_ROLE}" | jq -r '.Credentials.SecretAccessKey')
+      - export DATA_AWS_SESSION_TOKEN=$(echo "${DATA_TEMP_ROLE}" | jq -r '.Credentials.SessionToken')
+      # Pick which bucket to check
+      - export S3_BUCKET_NAME=au-com-slyp-$DATA_ENV-datalake-raw-merchant-common
+      # kick off the smoke tests as defined in smokeTest.ts
+      - npm run start

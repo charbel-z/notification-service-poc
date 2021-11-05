@@ -1,0 +1,40 @@
+# Commented out to avoid it triggering
+# name: Trigger CodePipeline
+
+# # Bridge between GitHub repository events and AWS CodePipeline.
+# # For all Pull Requests opened, closed, or reopened:
+# #   Puts pipeline.template.yaml into deployment infra artifact bucket pipelines/slypreceipts/<repo_name>/<branch_name>/
+# #   Sends branch info, repo, and event info to deployment infra SNS topic below
+# #   This payload is then processed by the deployment-infra-pipeline-maker lambda
+# on:
+#   pull_request:
+#     types: [opened, closed, reopened]
+
+# jobs:
+#   Publish-To-Shared-SNS:
+#     if: startsWith(github.head_ref, 'feature/') || startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'hotfix/')
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Configure AWS Credentials
+#         uses: aws-actions/configure-aws-credentials@v1
+#         with:
+#           aws-access-key-id: ${{ secrets.ACCESS_AWS_ACCESS_KEY_ID }}
+#           aws-secret-access-key: ${{ secrets.ACCESS_AWS_SECRET_ACCESS_KEY }}
+#           aws-region: ap-southeast-2
+#           role-to-assume: arn:aws:iam::833843385348:role/account-deployer
+#           role-duration-seconds: 900
+
+#       - name: Checkout
+#         uses: actions/checkout@master
+#       - name: Upload pipeline.template.yaml to S3
+#         run: |
+#           aws s3 cp build/serial.pipeline.template.yaml s3://au-slyp-com-account-artifact-bucket-833843385348/pipelines/${{ github.repository }}/${{ github.head_ref }}/pipeline.template.yaml --acl private
+
+#       - name: Fetch Current Topic ARN
+#         run: |
+#           TOPIC_ARN=$(aws sns list-topics --query "Topics[?contains(TopicArn, 'deployment-pipeline-LambdaStack')]|[0].TopicArn" | cut -f 2 -d '"')
+#           echo "topic_arn=$TOPIC_ARN" >> $GITHUB_ENV
+
+#       - name: Publish Topic to Shared
+#         run: |
+#           aws sns publish --message '{"repository":"${{ github.repository }}","ref":"${{ github.ref }}","base_ref":"${{ github.base_ref }}","head_ref":"${{ github.head_ref }}","event_name":"${{ github.event_name }}","event_type":"${{ github.event.action }}"}' --topic-arn ${{ env.topic_arn }}

@@ -1,0 +1,498 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  A CodePipeline created by the PipelineMakerLambda per branch for the data-lake repo
+
+Parameters:
+  PipelineServiceRoleArn: # Provided by pipeline maker lambda in deployment-pipeline from default env variables
+    Description: Pipeline service role ARN
+    Type: String
+  BucketCleanupLambdaArn: # Provided by pipeline maker lambda in deployment-pipeline from default env variables
+    Description: ARN of Lambda function to clean up s3 buckets
+    Type: String
+  Branch:  # Provided by pipeline maker lambda in deployment-pipeline from sns trigger
+    Description: Repository branch name
+    Type: String
+  Suffix: # calculated in pipeline make lambda based on branch name
+    Description: Repository branch name (adapted to use in CloudFormation stack name)
+    Type: String
+  StackName: # calculated in pipeline make lambda based on branch name and parent stack
+    Description: The stack name being created for this pipeline based on branch name (adapted to use in CloudFormation stack name)
+    Type: String
+  ParentStackName: # Provided by pipeline maker lambda in deployment-pipeline from default env variables
+    Description: The name of the Parent Stack
+    Type: String
+  ArtifactBucket: # Provided by pipeline maker lambda in deployment-pipeline from default env variables
+    Description: Artifact S3 bucket
+    Type: String
+  ArtifactBucketKeyArn: # Provided by pipeline maker lambda in deployment-pipeline from default env variables
+    Description: ARN of the artifact bucket KMS key
+    Type: String
+  Repo: # Provided by pipeline maker lambda in the mean time set a default
+    Description: The name of this repo passed by trigger.yaml to the deployment infra
+    Type: String
+  TargetStackName: # NOT PASSED IN BY DEPLOYMENT INFRA MUST BE UPDATED
+    Description: The name of the applications stack to be created in target accounts
+    Type: String
+    Default: #Target StackName here
+
+Conditions:
+  # Does the branch start with feature/
+  IsFeature: !And [ 
+    !Not [ !Equals [ !Ref Branch, "" ]],
+    !Equals [ !Select [ 0, !Split [ 'feature/', !Ref Branch ] ], "" ]
+  ]
+  # Does the branch start with release/
+  IsRelease: !And [ 
+    !Not [ !Equals [ !Ref Branch, "" ]],
+    !Equals [ !Select [ 0, !Split [ 'release/', !Ref Branch ] ], "" ]
+  ]
+  # Does the branch start with hotfix/
+  IsHotfix: !And [ 
+    !Not [ !Equals [ !Ref Branch, "" ]],
+    !Equals [ !Select [ 0, !Split [ 'hotfix/', !Ref Branch ] ], "" ]
+  ]
+  IsHotfixOrRelease: !Or [!Condition IsHotfix, !Condition IsRelease]
+  IsValidBranch: !Or [!Condition IsHotfix, !Condition IsRelease, !Condition IsFeature]
+  
+Resources:
+  # Upon deleting this stack this will trigger the bucket_cleanup lambda to clear s3 of pipeline artifacts for this pipeline
+  # REQUIRED
+  DynamicPipelineCleanupDev:
+    Type: "AWS::CloudFormation::CustomResource"
+    Version: '1.0'
+    Properties:
+      ServiceToken: !Ref BucketCleanupLambdaArn
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/CodePipelineServiceRole-${AWS::Region}-${AWS::AccountId}
+      Bucket: !Ref ArtifactBucket
+      Folder: !Ref Suffix
+      Repo: !Join ['', ['slypreceipts/', !Ref Repo]]
+      Branch: !Ref Branch
+      # Check here as this BuildProject can be named anything
+      LogGroupsToDelete:
+        !If
+          - IsHotfixOrRelease
+          - [ !Ref SmokeTestProjectLogGroup, !Ref SharedAccountBuildProjectLogGroup ] # Save BuildLogs for releases and hotfixes
+          - [ !Ref SmokeTestProjectLogGroup, !Ref BuildProjectLogGroup, !Ref SharedAccountBuildProjectLogGroup ]
+  
+  # An SNS topic triggered by codepipeline events to be sent to pipeline-reporter lambda
+  # REQUIRED
+  PipelineNotificationSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub ${ParentStackName}-${Suffix}-reporter
+      Subscription:
+        - Endpoint: !ImportValue pipeline-reporter-lambda-arn
+          Protocol: 'lambda'
+
+  # REQUIRED
+  PipelineNotificationSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SnsTopicPolicy
+            Effect: Allow
+            Principal:
+              Service: 'codestar-notifications.amazonaws.com'
+            Action:
+              - sns:Publish
+            Resource: !Ref PipelineNotificationSNSTopic
+      Topics:
+        - !Ref PipelineNotificationSNSTopic
+  
+  # Event rule to trigger PipelineNotificationSNSTopic with pipeline events 
+  # REQUIRED
+  PipelineNotificationRule:
+    Type: 'AWS::CodeStarNotifications::NotificationRule'
+    Properties:
+      Name: !Ref Suffix
+      DetailType: FULL
+      Resource: !Join ['', ['arn:aws:codepipeline:', !Ref AWS::Region, ':', !Ref AWS::AccountId, ':', !Ref Pipeline ]]
+      EventTypeIds:
+       - codepipeline-pipeline-pipeline-execution-failed
+       - codepipeline-pipeline-pipeline-execution-canceled
+       - codepipeline-pipeline-pipeline-execution-started
+       - codepipeline-pipeline-pipeline-execution-resumed
+       - codepipeline-pipeline-pipeline-execution-succeeded
+       - codepipeline-pipeline-pipeline-execution-superseded
+      Targets:
+        - TargetType: SNS
+          TargetAddress: !Ref PipelineNotificationSNSTopic
+
+  # Gives PipelineNotificationSNSTopic permission to invoke pipeline reporter lambda
+  # REQUIRED
+  SnsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue pipeline-reporter-lambda-arn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref PipelineNotificationSNSTopic
+
+  Pipeline:
+    Condition: IsValidBranch
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Ref Suffix
+      RoleArn: !Ref PipelineServiceRoleArn
+      Stages:
+        ######################################
+        ############### SOURCE ###############
+        ######################################
+        # Checks out from github using the provided personal access token the provided branch
+        - Name: Source
+          Actions:
+            - Name: GithubSourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              Configuration:
+                Owner: 'slypreceipts'
+                Repo: !Ref Repo
+                Branch: !Ref Branch
+                # TODO: SLYP-3781 change to this secret
+                OAuthToken: '{{resolve:secretsmanager:poc-github-personal-access-token-code-build}}'
+              OutputArtifacts:
+                - Name: Source 
+              RunOrder: 1
+        ######################################
+        ########## BUILD/UNIT-TEST ###########
+        ######################################
+        # Runs cloudformation package based on BuildProject below
+        - Name: BuildApplication
+          Actions:
+            - Name: Build
+              RunOrder: 1
+              InputArtifacts:
+                - Name: Source
+              ActionTypeId:
+                Category: Build
+                Provider: CodeBuild
+                Owner: AWS
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildProject
+              OutputArtifacts:
+                - Name: BuildArtifact
+        ######################################
+        ####### DEPLOY FOR SMOKETESTS ########
+        #######    TEAM + STAGING     ########
+        ######################################
+        # Deploys to the Team and Staging Env
+        - Name: DeployToTeamAndStaging
+          Actions:
+            ###############
+            ### PHASE 1 ###
+            ###############
+            - Name: CreateChangeSetTeamAccount
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              ActionTypeId:
+                Category: Deploy
+                Provider: CloudFormation
+                Owner: AWS
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ChangeSetName: !Sub team-change-set-${Suffix}
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue team-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                StackName: !Ref TargetStackName
+                # Created in the buildspec.build.yaml of the BuildProject
+                TemplatePath: BuildArtifact::resources-transformed.yaml
+                # Created in the buildspec.build.yaml of the BuildProject
+                TemplateConfiguration: BuildArtifact::resources-configuration-team.json
+              # This is what determines what env will be deployed
+              RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue team-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+            - Name: CreateChangeSetStagingAccount
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              ActionTypeId:
+                Category: Deploy
+                Provider: CloudFormation
+                Owner: AWS
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ChangeSetName: !Sub staging-change-set-${Suffix}
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue staging-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                StackName: !Ref TargetStackName
+                # Created in the buildspec.build.yaml of the BuildProject
+                TemplatePath: BuildArtifact::resources-transformed.yaml
+                # Created in the buildspec.build.yaml of the BuildProject
+                TemplateConfiguration: BuildArtifact::resources-configuration-staging.json
+              # This is what determines what env will be deployed
+              RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue staging-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+            ###############
+            ### PHASE 2 ###
+            ###############
+            - Name: DeployChangeSetTeamAccount
+              RunOrder: 2
+              ActionTypeId:
+                Category: Deploy
+                Provider: CloudFormation
+                Owner: AWS
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ChangeSetName: !Sub team-change-set-${Suffix}
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue team-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                StackName: !Ref TargetStackName
+              # This is what determines what env will be deployed
+              RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue team-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+            - Name: DeployChangeSetStagingAccount
+              RunOrder: 2
+              ActionTypeId:
+                Category: Deploy
+                Provider: CloudFormation
+                Owner: AWS
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                ChangeSetName: !Sub staging-change-set-${Suffix}
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue staging-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                StackName: !Ref TargetStackName
+              # This is what determines what env will be deployed
+              RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue staging-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+            ###############
+            ### PHASE 3 ###
+            ###############
+            - Name: SmokeTestTeam
+              RunOrder: 3
+              InputArtifacts:
+                - Name: BuildArtifact
+              ActionTypeId:
+                Category: Build
+                Provider: CodeBuild
+                Owner: AWS
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref SmokeTestProject
+                EnvironmentVariables: !Join ["", ['[{"name":"PLATFORM_ACCOUNT_ID","value":"', !ImportValue team-aws-account-id, '","type":"PLAINTEXT"},{"name":"DATA_ACCOUNT_ID","value":"', !ImportValue teamdata-aws-account-id, '","type":"PLAINTEXT"},{"name":"DATA_ENV","value":"teamdata","type":"PLAINTEXT"}]']]
+        ######################################
+        #######  DEPLOY FOR RELEASES  ########
+        #######  INTEGRATION -> PROD  ########
+        ######################################
+        # Deploys to the Integration and then Prod Env
+        - !If
+          - IsHotfixOrRelease
+          - Name: DeployToIntegrationAndProd
+            Actions:
+              ###############
+              ### PHASE 1 ###
+              ###############
+              - Name: CreateChangeSetIntegrationAccount
+                RunOrder: 1
+                InputArtifacts:
+                  - Name: BuildArtifact
+                ActionTypeId:
+                  Category: Deploy
+                  Provider: CloudFormation
+                  Owner: AWS
+                  Version: '1'
+                Configuration:
+                  ActionMode: CHANGE_SET_REPLACE
+                  Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                  ChangeSetName: !Sub integration-change-set-${Suffix}
+                  # This is what determines what env will be deployed
+                  RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue integration-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                  StackName: !Ref TargetStackName
+                  # Created in the buildspec.build.yaml of the BuildProject
+                  TemplatePath: BuildArtifact::resources-transformed.yaml
+                  # Created in the buildspec.build.yaml of the BuildProject
+                  TemplateConfiguration: BuildArtifact::resources-configuration-integration.json
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue integration-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+              - Name: CreateChangeSetProdAccount
+                RunOrder: 1
+                InputArtifacts:
+                  - Name: BuildArtifact
+                ActionTypeId:
+                  Category: Deploy
+                  Provider: CloudFormation
+                  Owner: AWS
+                  Version: '1'
+                Configuration:
+                  ActionMode: CHANGE_SET_REPLACE
+                  Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                  ChangeSetName: !Sub prod-change-set-${Suffix}
+                  # This is what determines what env will be deployed
+                  RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue prod-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                  StackName: !Ref TargetStackName
+                  # Created in the buildspec.build.yaml of the BuildProject
+                  TemplatePath: BuildArtifact::resources-transformed.yaml
+                  # Created in the buildspec.build.yaml of the BuildProject
+                  TemplateConfiguration: BuildArtifact::resources-configuration-prod.json
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue prod-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+              ###############
+              ### PHASE 2 ###
+              ###############
+              # Force manual approval here for hotfix and release branches
+              - Name: IntegrationApproval
+                RunOrder: 2
+                ActionTypeId:
+                  Category: Approval
+                  Provider: Manual
+                  Owner: AWS
+                  Version: '1'
+              ###############
+              ### PHASE 3 ###
+              ###############
+              - Name: DeployChangeSetIntegrationAccount
+                RunOrder: 3
+                ActionTypeId:
+                  Category: Deploy
+                  Provider: CloudFormation
+                  Owner: AWS
+                  Version: '1'
+                Configuration:
+                  ActionMode: CHANGE_SET_EXECUTE
+                  Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                  ChangeSetName: !Sub integration-change-set-${Suffix}
+                  # This is what determines what env will be deployed
+                  RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue integration-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                  StackName: !Ref TargetStackName
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue integration-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+              ###############
+              ### PHASE 4 ###
+              ###############
+              - Name: SmokeTestIntegration
+                RunOrder: 4
+                InputArtifacts:
+                  - Name: BuildArtifact
+                ActionTypeId:
+                  Category: Build
+                  Provider: CodeBuild
+                  Owner: AWS
+                  Version: '1'
+                Configuration:
+                  ProjectName: !Ref SmokeTestProject
+                  EnvironmentVariables: !Join ["", ['[{"name":"PLATFORM_ACCOUNT_ID","value":"', !ImportValue integration-aws-account-id, '","type":"PLAINTEXT"},{"name":"DATA_ACCOUNT_ID","value":"', !ImportValue integrationdata-aws-account-id, '","type":"PLAINTEXT"}{"name":"DATA_ENV","value":"integrationdata","type":"PLAINTEXT"}]']]
+              ###############
+              ### PHASE 5 ###
+              ###############
+              - Name: ProdApproval
+                RunOrder: 5
+                ActionTypeId:
+                  Category: Approval
+                  Provider: Manual
+                  Owner: AWS
+                  Version: '1'
+              ###############
+              ### PHASE 6 ###
+              ###############
+              - Name: DeployChangeSetProdAccount
+                RunOrder: 6
+                ActionTypeId:
+                  Category: Deploy
+                  Provider: CloudFormation
+                  Owner: AWS
+                  Version: '1'
+                Configuration:
+                  ActionMode: CHANGE_SET_EXECUTE
+                  Capabilities: CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM
+                  ChangeSetName: !Sub prod-change-set-${Suffix}
+                  # This is what determines what env will be deployed
+                  RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue prod-aws-account-id, ':role/CodePipelineDeploymentRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+                  StackName: !Ref TargetStackName
+                # This is what determines what env will be deployed
+                RoleArn: !Join ["", ['arn:aws:iam::', !ImportValue prod-aws-account-id, ':role/CodePipelineServiceRole-', !Ref AWS::Region, '-', !Ref AWS::AccountId]]
+              ###############
+              ### PHASE 7 ###
+              ###############
+              - Name: SmokeTestProd
+                RunOrder: 7
+                InputArtifacts:
+                  - Name: BuildArtifact
+                ActionTypeId:
+                  Category: Build
+                  Provider: CodeBuild
+                  Owner: AWS
+                  Version: '1'
+                Configuration:
+                  ProjectName: !Ref SmokeTestProject
+                  EnvironmentVariables: !Join ["", ['[{"name":"PLATFORM_ACCOUNT_ID","value":"', !ImportValue prod-aws-account-id, '","type":"PLAINTEXT"},{"name":"DATA_ACCOUNT_ID","value":"', !ImportValue proddata-aws-account-id, '","type":"PLAINTEXT"}{"name":"DATA_ENV","value":"proddata","type":"PLAINTEXT"}]']]
+          - !Ref AWS::NoValue
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+        EncryptionKey:
+          Id: !Ref ArtifactBucketKeyArn
+          Type: KMS
+  
+  BuildProjectLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain # This LogGroup will not be deleted during the deletion of the stack so that build logs will last for RetentionInDays below
+    Properties:
+      LogGroupName: !Join ["", [ "/aws/codebuild/", !Ref Suffix, "-build" ]]
+      RetentionInDays:
+        !If
+          - IsHotfixOrRelease
+          - 180 # release build logs will stay for 6 months
+          - 14
+
+  BuildProject:
+    DependsOn: BuildProjectLogGroup
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${Suffix}-build
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: build/buildspec.build.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref BuildProjectLogGroup
+          Status: ENABLED
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:5.0
+        # These can be accessed inside the BuildSpec: <file> above
+        EnvironmentVariables:
+          - Name:
+            Value:
+      ServiceRole: !Ref PipelineServiceRoleArn
+      EncryptionKey: !Ref ArtifactBucketKeyArn
+
+  SmokeTestProjectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ["", [ "/aws/codebuild/", !Ref Suffix, "-smoketest" ]]
+      RetentionInDays: 14
+
+  SmokeTestProject:
+    DependsOn: SmokeTestProjectLogGroup
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${Suffix}-smoketest
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: build/buildspec.smoketest.yaml
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref SmokeTestProjectLogGroup
+          Status: ENABLED
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:5.0
+      ServiceRole: !Ref PipelineServiceRoleArn
+      EncryptionKey: !Ref ArtifactBucketKeyArn

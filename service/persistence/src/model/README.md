@@ -1,0 +1,1 @@
+- Contains the Typescript types representing the database instances

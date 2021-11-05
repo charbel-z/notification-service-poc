@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Service master template which builds all resources
+
+Resources:
+  ##########################
+  ######## LEVEL 0 #########
+  # must be deployed first #
+  ##########################
+  PersistenceStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ParentStackName: !Ref AWS::StackName
+      TemplateURL: service/persistence/build/template.yaml
+      TimeoutInMinutes: 60
+
+  ##########################
+  ######## LEVEL 1 #########
+  ## must be deployed 2nd ##
+  ##########################
+
+  IngesterStack:
+    DependsOn: [PersistenceStack]
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ParentStackName: !Ref AWS::StackName
+      TemplateURL: service/ingester/template.yaml
+      TimeoutInMinutes: 60
+
+  ProcessorStack:
+    DependsOn: [PersistenceStack]
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ParentStackName: !Ref AWS::StackName
+      TemplateURL: service/processor/template.yaml
+      TimeoutInMinutes: 60
+
+  ReaderStack:
+    DependsOn: [PersistenceStack]
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ParentStackName: !Ref AWS::StackName
+      TemplateURL: service/reader/template.yaml
+      TimeoutInMinutes: 60
+
+  ##########################
+  ######## LEVEL 2 #########
+  ## must be deployed 3rd ##
+  ##########################
+
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [IngesterStack, ProcessorStack, ReaderStack]
+    Properties:
+      Parameters:
+        ParentStackName: !Ref AWS::StackName
+        # Example of how outputs can be shared across parent stack
+        IngesterFunctionArn: !GetAtt IngesterStack.Outputs.IngesterFunctionArn
+      TemplateURL: service/network/build/template.yaml
+      TimeoutInMinutes: 60

@@ -1,0 +1,58 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 14
+    commands:
+      - aws codeartifact login --tool npm --domain au-com-slyp --repository $REPO --domain-owner $DEPLOYED_ACCOUNT_ID
+      - npm ci
+  pre_build:
+    on-failure: ABORT
+    commands:
+      # Required for forced verification that pipeline definitions cannot be changed accidentally - rare edge case
+      - aws s3 cp s3://$ARTIFACT_BUCKET/pipelines/slypreceipts/$REPO/$BRANCH/pipeline.template.yaml ./s3-pipeline.template.yaml
+      - cmp --silent build/pipeline.serial.template.yaml s3-pipeline.template.yaml || ( echo "pipeline.template.yaml has changed. You must recreate your pipeline. TODO - automate this"; exit 1 )
+  build:
+    commands:
+      - echo "Check Linting"
+      - npm run eslint
+      - echo "Check Code Formatting"
+      - npm run prettier
+      - echo "Running Unit Tests"
+      - npm run unit-test
+      - echo "Building Application"
+      - npm run build
+      # pipeline artifacts are put into a folder of pipeline.name truncated to lenth 20
+      # this keeps all pipeline files in one folder that can be cleaned up easily
+      - s3_prefix=$(echo "$S3_PREFIX" | cut -c -20)
+      # package all service parts
+      - echo "Packaging application"
+      - aws sam package --template-file parent-template.yaml --output-template-file parent-transformed.yaml --s3-bucket $ARTIFACT_BUCKET --s3-prefix $s3_prefix
+      # format parameter inputs for each aws account env for parent stack
+      - |-
+        echo "{ \"Parameters\" : { \"Env\" : \"team\" } }" > resources-configuration-team.json
+        echo "{ \"Parameters\" : { \"Env\" : \"staging\" } }" > resources-configuration-staging.json
+        echo "{ \"Parameters\" : { \"Env\" : \"integration\" } }" > resources-configuration-integration.json
+        echo "{ \"Parameters\" : { \"Env\" : \"prod\" } }" > resources-configuration-prod.json
+
+cache:
+  paths:
+    - "node_modules/**/*"
+
+reports:
+  stream_consumer_coverage_report:
+    files:
+      - "clover.xml"
+    file-format: CloverXML
+    base-directory: ./coverage
+
+artifacts:
+  files:
+    - parent-transformed.yaml
+    - resources-configuration-team.json
+    - resources-configuration-staging.json
+    - resources-configuration-integration.json
+    - resources-configuration-prod.json
+    - build/buildspec.smoketest.yaml
+    - build/smoketest/*

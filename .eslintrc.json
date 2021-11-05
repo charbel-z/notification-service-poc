@@ -1,0 +1,27 @@
+{
+  "root": true,
+  "extends": "eslint:recommended",
+  "overrides": [
+    {
+      "files": ["**/*.spec.ts"],
+      "env": {
+        "jest": true
+      }
+    },
+    {
+      "files": ["*.ts"],
+      "parser": "@typescript-eslint/parser",
+      "plugins": ["@typescript-eslint"],
+      "extends": [
+        "eslint:recommended",
+        "plugin:@typescript-eslint/recommended"
+      ],
+      "rules": {
+        "prefer-const": "error",
+        "no-console": "error",
+        "func-style": ["error", "declaration"],
+        "semi": ["error", "always"]
+      }
+    }
+  ]
+}
