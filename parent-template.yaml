@@ -37,7 +37,7 @@ Resources:
     Properties:
       Parameters:
         ParentStackName: !Ref AWS::StackName
-      TemplateURL: service/processor/template.yaml
+      TemplateURL: service/secret-guess/template.yaml
       TimeoutInMinutes: 60
 
   ReaderStack:

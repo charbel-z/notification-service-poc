@@ -1,6 +1,10 @@
 {
   "root": true,
   "extends": "eslint:recommended",
+  "env": {
+    "node": true,
+    "es6": true
+  },
   "overrides": [
     {
       "files": ["**/*.spec.ts"],
@@ -18,7 +22,7 @@
       ],
       "rules": {
         "prefer-const": "error",
-        "no-console": "error",
+        "no-console": "off",
         "func-style": ["error", "declaration"],
         "semi": ["error", "always"]
       }

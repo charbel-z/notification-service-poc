@@ -27,5 +27,5 @@ phases:
       - export DATA_AWS_SESSION_TOKEN=$(echo "${DATA_TEMP_ROLE}" | jq -r '.Credentials.SessionToken')
       # Pick which bucket to check
       - export S3_BUCKET_NAME=au-com-slyp-$DATA_ENV-datalake-raw-merchant-common
-      # kick off the smoke tests as defined in smokeTest.ts
+      # kick off the smoke test as defined in smokeTest.ts
       - npm run start

@@ -1,0 +1,12 @@
+{
+  "extends": "./../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "build/dist",
+    "target": "es5",
+    "lib": ["es6","dom"],
+    "types": ["node","reflect-metadata", "jest"],
+    "module": "commonjs",
+    "moduleResolution": "node",
+  },
+  "include": ["src/**/*", "test/**/*","test/*"]
+}

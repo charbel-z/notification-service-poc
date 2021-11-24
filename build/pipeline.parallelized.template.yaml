@@ -1,4 +1,4 @@
 # The intention here is that once an application is established and deployed in an env
 # There are many resources that have the exported value required by the rest of the application
 # This means that the deployment of resources can be parallelized in order to decrease
-# time to prod and build minutes while testing in smoke tests
+# time to prod and build minutes while testing in smoke test
