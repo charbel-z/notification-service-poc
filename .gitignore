@@ -1,4 +1,4 @@
 .aws-sam
 node_modules
-dist/** # Typescript build output
+build/dist/** # Typescript build output
 .idea
