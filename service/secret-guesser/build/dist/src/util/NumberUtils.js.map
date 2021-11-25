@@ -1,0 +1,1 @@
+{"version":3,"file":"NumberUtils.js","sourceRoot":"","sources":["../../../../src/util/NumberUtils.ts"],"names":[],"mappings":";;;AAAA;IAAA;IAQA,CAAC;IAPe,kBAAM,GAApB,UAAqB,MAAc;QACjC,OAAO,MAAM,GAAG,CAAC,IAAI,CAAC,CAAC;IACzB,CAAC;IAEa,iBAAK,GAAnB,UAAoB,MAAc;QAChC,OAAO,CAAC,IAAI,CAAC,MAAM,CAAC,MAAM,CAAC,CAAC;IAC9B,CAAC;IACH,kBAAC;AAAD,CAAC,AARD,IAQC;AARY,kCAAW"}
